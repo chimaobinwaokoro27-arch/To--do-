@@ -1,6 +1,6 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
-import { db } from '../config/db.js';
+import { query } from '../config/db.js';
 import { nowLocalIsoString } from '../utils/dateTime.js';
 import { requireAuth } from '../middleware/auth.js';
 import {
@@ -16,11 +16,6 @@ const router = express.Router();
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MIN_PASSWORD_LENGTH = 8;
 const SALT_ROUNDS = 10;
-
-const insertUser = db.prepare(
-  'INSERT INTO users (email, passwordHash, createdAt) VALUES (?, ?, ?)'
-);
-const selectByEmail = db.prepare('SELECT * FROM users WHERE email = ?');
 
 class ValidationError extends Error {
   constructor(message) {
@@ -61,11 +56,12 @@ function startSession(res, user) {
 }
 
 // POST /api/auth/register
-router.post('/register', (req, res, next) => {
+router.post('/register', async (req, res, next) => {
   try {
     const { email, password } = readCredentials(req.body || {});
 
-    if (selectByEmail.get(email)) {
+    const existing = await query('SELECT id FROM users WHERE email = $1', [email]);
+    if (existing.rows.length > 0) {
       const error = new Error('An account with that email already exists');
       error.status = 409;
       throw error;
@@ -74,8 +70,23 @@ router.post('/register', (req, res, next) => {
     // Only the hash is stored. The plain password is never written anywhere.
     const passwordHash = bcrypt.hashSync(password, SALT_ROUNDS);
 
-    const result = insertUser.run(email, passwordHash, nowLocalIsoString());
-    const user = { id: Number(result.lastInsertRowid), email };
+    let result;
+    try {
+      result = await query(
+        'INSERT INTO users (email, password_hash, created_at) VALUES ($1, $2, $3) RETURNING id',
+        [email, passwordHash, nowLocalIsoString()]
+      );
+    } catch (error) {
+      // Another request created the same email between the check and the insert.
+      if (error?.code === '23505') {
+        const conflict = new Error('An account with that email already exists');
+        conflict.status = 409;
+        throw conflict;
+      }
+      throw error;
+    }
+
+    const user = { id: result.rows[0].id, email };
 
     startSession(res, user);
 
@@ -86,11 +97,12 @@ router.post('/register', (req, res, next) => {
 });
 
 // POST /api/auth/login
-router.post('/login', (req, res, next) => {
+router.post('/login', async (req, res, next) => {
   try {
     const { email, password } = readCredentials(req.body || {});
 
-    const user = selectByEmail.get(email);
+    const result = await query('SELECT * FROM users WHERE email = $1', [email]);
+    const user = result.rows[0] || null;
 
     // The same message for "no such email" and "wrong password" so the
     // response cannot be used to find out which addresses are registered.

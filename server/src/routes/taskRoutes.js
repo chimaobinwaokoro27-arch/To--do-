@@ -1,5 +1,5 @@
 import express from 'express';
-import { db } from '../config/db.js';
+import { query } from '../config/db.js';
 import { requireAuth } from '../middleware/auth.js';
 import {
   nowLocalIsoString,
@@ -16,29 +16,13 @@ router.use(requireAuth);
 
 const MAX_REMINDER_MINUTES = 60 * 24 * 7; // 7 days
 
-const insertTask = db.prepare(`
-  INSERT INTO tasks (title, description, deadline, reminderMinutes, reminderAt, recipientEmail, completed, emailSent, createdAt, userId)
-  VALUES (@title, @description, @deadline, @reminderMinutes, @reminderAt, @recipientEmail, 0, 0, @createdAt, @userId)
-`);
+// Every query filters on user_id as well as the id, so another person's task
+// simply does not exist as far as this request is concerned.
 
-// Every statement filters on userId as well as the id, so another person's
-// task simply does not exist as far as this request is concerned.
-const selectAllForUser = db.prepare(
-  'SELECT * FROM tasks WHERE userId = ? ORDER BY deadline ASC, id ASC'
-);
-const selectOwnedById = db.prepare('SELECT * FROM tasks WHERE id = ? AND userId = ?');
-const updateOwnedById = db.prepare(`
-  UPDATE tasks
-  SET title = @title,
-      description = @description,
-      deadline = @deadline,
-      reminderMinutes = @reminderMinutes,
-      reminderAt = @reminderAt,
-      recipientEmail = @recipientEmail,
-      completed = @completed
-  WHERE id = @id AND userId = @userId
-`);
-const deleteOwnedById = db.prepare('DELETE FROM tasks WHERE id = ? AND userId = ?');
+const SELECT_ALL_FOR_USER_SQL =
+  'SELECT * FROM tasks WHERE user_id = $1 ORDER BY deadline ASC, id ASC';
+
+const SELECT_OWNED_BY_ID_SQL = 'SELECT * FROM tasks WHERE id = $1 AND user_id = $2';
 
 class ValidationError extends Error {
   constructor(message) {
@@ -46,6 +30,15 @@ class ValidationError extends Error {
     this.name = 'ValidationError';
     this.status = 400;
   }
+}
+
+/**
+ * SQLite never complained about a non-numeric id ("abc" just matched nothing).
+ * PostgreSQL would, so we accept it as "not found" to keep the same behaviour.
+ */
+function parseId(value) {
+  const id = Number(value);
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 function parseReminderMinutes(value) {
@@ -98,7 +91,8 @@ function buildTaskValues(body, currentTask, userEmail) {
   return { title, description, deadline, reminderMinutes, completed, deadlineDate, userEmail };
 }
 
-router.post('/', (req, res, next) => {
+// POST /api/tasks
+router.post('/', async (req, res, next) => {
   try {
     const body = req.body || {};
     const { title, description, deadline, reminderMinutes, deadlineDate, userEmail } =
@@ -113,48 +107,56 @@ router.post('/', (req, res, next) => {
     }
 
     const createdAt = nowLocalIsoString();
-    const result = insertTask.run({
-      title,
-      description,
-      deadline,
-      reminderMinutes,
-      reminderAt,
-      recipientEmail: userEmail,
-      createdAt,
-      userId: req.user.id, // always the signed-in user
-    });
+    const inserted = await query(
+      `INSERT INTO tasks
+        (title, description, deadline, reminder_minutes, reminder_at, recipient_email,
+         completed, email_sent, created_at, user_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 0, 0, $7, $8)
+       RETURNING *`,
+      [title, description, deadline, reminderMinutes, reminderAt, userEmail, createdAt, req.user.id]
+    );
 
-    const task = selectOwnedById.get(result.lastInsertRowid, req.user.id);
-    res.status(201).json(task);
+    res.status(201).json(inserted.rows[0]);
   } catch (error) {
     next(error);
   }
 });
 
-router.get('/', (req, res, next) => {
+// GET /api/tasks
+router.get('/', async (req, res, next) => {
   try {
-    res.json(selectAllForUser.all(req.user.id));
+    const result = await query(SELECT_ALL_FOR_USER_SQL, [req.user.id]);
+    res.json(result.rows);
   } catch (error) {
     next(error);
   }
 });
 
-router.get('/:id', (req, res, next) => {
+// GET /api/tasks/:id
+router.get('/:id', async (req, res, next) => {
   try {
+    const id = parseId(req.params.id);
+    if (id === null) return res.status(404).json({ error: 'Task not found' });
+
     // A task that belongs to somebody else is reported as "not found" instead
     // of "forbidden", so its existence is never revealed.
-    const task = selectOwnedById.get(req.params.id, req.user.id);
-    if (!task) return res.status(404).json({ error: 'Task not found' });
-    res.json(task);
+    const result = await query(SELECT_OWNED_BY_ID_SQL, [id, req.user.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Task not found' });
+    res.json(result.rows[0]);
   } catch (error) {
     next(error);
   }
 });
 
-router.patch('/:id', (req, res, next) => {
+// PATCH /api/tasks/:id
+router.patch('/:id', async (req, res, next) => {
   try {
-    const currentTask = selectOwnedById.get(req.params.id, req.user.id);
-    if (!currentTask) return res.status(404).json({ error: 'Task not found' });
+    const id = parseId(req.params.id);
+    if (id === null) return res.status(404).json({ error: 'Task not found' });
+
+    const current = await query(SELECT_OWNED_BY_ID_SQL, [id, req.user.id]);
+    if (current.rows.length === 0) return res.status(404).json({ error: 'Task not found' });
+    const currentTask = current.rows[0];
 
     const body = req.body || {};
     const values = buildTaskValues(body, currentTask, req.user.email);
@@ -182,31 +184,45 @@ router.patch('/:id', (req, res, next) => {
       reminderAt = nowLocalIsoString();
     }
 
-    // emailSent is deliberately not in this list, so an update can never
+    // email_sent is deliberately not in this UPDATE, so an update can never
     // hand a task a second reminder email.
-    updateOwnedById.run({
-      id: currentTask.id,
-      userId: req.user.id,
-      title: values.title,
-      description: values.description,
-      deadline: values.deadline,
-      reminderMinutes: values.reminderMinutes,
-      reminderAt,
-      recipientEmail: values.userEmail,
-      completed: values.completed,
-    });
+    const updated = await query(
+      `UPDATE tasks
+       SET title = $1, description = $2, deadline = $3, reminder_minutes = $4,
+           reminder_at = $5, recipient_email = $6, completed = $7
+       WHERE id = $8 AND user_id = $9
+       RETURNING *`,
+      [
+        values.title,
+        values.description,
+        values.deadline,
+        values.reminderMinutes,
+        reminderAt,
+        values.userEmail,
+        values.completed,
+        currentTask.id,
+        req.user.id,
+      ]
+    );
 
-    res.json(selectOwnedById.get(currentTask.id, req.user.id));
+    res.json(updated.rows[0]);
   } catch (error) {
     next(error);
   }
 });
 
-router.delete('/:id', (req, res, next) => {
+// DELETE /api/tasks/:id
+router.delete('/:id', async (req, res, next) => {
   try {
-    const result = deleteOwnedById.run(req.params.id, req.user.id);
-    if (result.changes === 0) return res.status(404).json({ error: 'Task not found' });
-    res.json({ message: 'Task deleted', id: Number(req.params.id) });
+    const id = parseId(req.params.id);
+    if (id === null) return res.status(404).json({ error: 'Task not found' });
+
+    const result = await query('DELETE FROM tasks WHERE id = $1 AND user_id = $2', [
+      id,
+      req.user.id,
+    ]);
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Task not found' });
+    res.json({ message: 'Task deleted', id });
   } catch (error) {
     next(error);
   }

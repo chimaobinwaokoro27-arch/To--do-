@@ -1,37 +1,37 @@
 import cron from 'node-cron';
-import { db } from '../config/db.js';
+import { query } from '../config/db.js';
 import { nowLocalIsoString } from '../utils/dateTime.js';
 import { sendReminderEmail, describeEmailErrors } from './emailService.js';
 
 // The join only decides which address the reminder goes to: a task always
-// emails the account that owns it.
-const findDueTasks = db.prepare(`
-  SELECT tasks.*, users.email AS ownerEmail
+// emails the account that owns it. owner_email is camelCased by query().
+const FIND_DUE_TASKS_SQL = `
+  SELECT tasks.*, users.email AS owner_email
   FROM tasks
-  LEFT JOIN users ON users.id = tasks.userId
-  WHERE tasks.emailSent = 0
+  LEFT JOIN users ON users.id = tasks.user_id
+  WHERE tasks.email_sent = 0
     AND tasks.completed = 0
-    AND tasks.reminderAt <= ?
-  ORDER BY tasks.reminderAt ASC
-`);
+    AND tasks.reminder_at <= $1
+  ORDER BY tasks.reminder_at ASC
+`;
 
-const markEmailSent = db.prepare('UPDATE tasks SET emailSent = 1 WHERE id = ?');
+const MARK_EMAIL_SENT_SQL = 'UPDATE tasks SET email_sent = 1 WHERE id = $1';
 
 let isRunning = false;
 
 /**
  * Sends a reminder for every task whose reminder time has been reached.
- * emailSent is only set to 1 when the email actually succeeded, so a
+ * email_sent is only set to 1 when the email actually succeeded, so a
  * failed email is retried on the next run instead of being lost.
  */
 export async function checkReminders() {
   if (isRunning) return 0;
   isRunning = true;
 
-  const now = nowLocalIsoString();
-  const dueTasks = findDueTasks.all(now);
-
   try {
+    const now = nowLocalIsoString();
+    const { rows: dueTasks } = await query(FIND_DUE_TASKS_SQL, [now]);
+
     if (dueTasks.length === 0) return 0;
 
     console.log(`Reminder check at ${now}: ${dueTasks.length} task(s) due`);
@@ -45,7 +45,7 @@ export async function checkReminders() {
         const recipientEmail = task.ownerEmail || task.recipientEmail;
 
         await sendReminderEmail({ ...task, recipientEmail });
-        markEmailSent.run(task.id);
+        await query(MARK_EMAIL_SENT_SQL, [task.id]);
         sent += 1;
       } catch (error) {
         const { code, message } = describeEmailErrors(error);

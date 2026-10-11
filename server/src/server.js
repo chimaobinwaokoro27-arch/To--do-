@@ -5,11 +5,20 @@ import { startReminderScheduler } from './services/reminderService.js';
 
 const PORT = Number(process.env.PORT) || 5000;
 
-initDatabase();
+async function start() {
+  // PostgreSQL schema is created (or already exists) before anything listens,
+  // so the API never answers before the database is ready.
+  await initDatabase();
 
-app.listen(PORT, () => {
-  console.log(`API listening on http://localhost:${PORT}`);
-  console.log(`Health check: http://localhost:${PORT}/api/health`);
+  app.listen(PORT, () => {
+    console.log(`API listening on http://localhost:${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
+  });
+
+  startReminderScheduler();
+}
+
+start().catch((error) => {
+  console.error('Failed to start the API:', error?.message || error);
+  process.exit(1);
 });
-
-startReminderScheduler();
