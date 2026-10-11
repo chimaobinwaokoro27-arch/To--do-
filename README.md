@@ -9,7 +9,7 @@ arrives. Each account only ever sees its own tasks.
 | Folder    | What it is                                                            |
 | --------- | --------------------------------------------------------------------- |
 | `/` (root) | React 19 + Vite frontend. Builds to `dist/`.                         |
-| `server/` | Express + SQLite backend with authentication and the reminder scheduler. |
+| `server/` | Express backend with authentication, the reminder scheduler, and a Supabase PostgreSQL database. |
 
 The frontend and backend are separate apps with their own `package.json`.
 See `server/README.md` for the full backend reference.
@@ -91,24 +91,27 @@ cd server && npm start # boots the API (needs a valid .env for email)
 - Anything in `VITE_API_URL` is visible in the browser bundle, so it must only
   ever contain the API URL - never a secret.
 
-### Backend - needs a persistent host
+### Backend - a running process + a PostgreSQL database
 
-The current backend cannot run on Vercel's serverless functions, because it:
+The backend cannot run on Vercel's serverless functions, because it runs a
+**continuously running `node-cron` scheduler** for reminders and needs long-lived
+processes rather than per-request functions.
 
-- uses a **SQLite file** that must live on persistent storage,
-- runs a **continuously running `node-cron` scheduler** for reminders,
-- needs long-lived processes rather than per-request functions.
+- Deploy `server/` to a host that keeps a process running, for example **Render**
+  (its free tier works — a blueprint is in `render.yaml`).
+- The database is **PostgreSQL on Supabase** (free tier). Create the tables once
+  with `server/db/schema.sql` (or let the backend do it on first start) and set
+  `DATABASE_URL` to your connection string.
 
-Deploy `server/` to a host that keeps a process running and offers a persistent
-disk (for example Render, Railway, Fly.io, or a small VPS). Then:
+Then:
 
 1. Set the same environment variables as `server/.env` there (including the real
-   `JWT_SECRET` and Gmail App Password), and `NODE_ENV=production`.
+   `JWT_SECRET`, `DATABASE_URL`, and Gmail App Password), and `NODE_ENV=production`.
 2. Set `CLIENT_URL` to the deployed Vercel URL so CORS and cookies work.
 3. Point the frontend's `VITE_API_URL` at that backend's HTTPS URL.
 
-SQLite persistence, the scheduler, and Gmail delivery must all be verified on
-the chosen host before reminders can be trusted in production.
+The scheduler and Gmail delivery must be verified on the chosen host before
+reminders can be trusted in production.
 
 ## 5. Security notes
 

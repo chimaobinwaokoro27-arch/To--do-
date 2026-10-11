@@ -5,12 +5,13 @@ This guide deploys the two halves of the project:
 | Part | What it is | Where it goes |
 | --- | --- | --- |
 | Frontend | React + Vite static site (repo root) | Vercel |
-| Backend | Express API + SQLite + reminder scheduler (`server/`) | Render (persistent Node service) |
+| Backend | Express API + reminder scheduler (`server/`) | Render + Supabase (PostgreSQL) |
 
 The frontend is a plain static site, so Vercel is a perfect fit. The backend
-**cannot** run on Vercel: it keeps a SQLite file on disk and runs a `node-cron`
-scheduler that must stay alive between requests. It needs a host that gives you a
-long-running process and a persistent disk.
+**cannot** run on Vercel: it runs a `node-cron` scheduler that must stay alive
+between requests, so it needs a long-running process (Render). Its data lives in
+a managed PostgreSQL database on Supabase (free tier), which is reliable and
+needs no disk to babysit.
 
 > Deploy the backend **first**, so you have its URL for the frontend's
 > `VITE_API_URL`.
@@ -19,6 +20,9 @@ long-running process and a persistent disk.
 
 ## 1. Backend on Render
 
+> Before deploying, create the tables in Supabase and copy the connection string
+> (see [section 4](#4-database-supabase-postgresql)).
+
 ### Option A — Blueprint (recommended)
 
 A ready-made blueprint lives in `render.yaml`.
@@ -26,8 +30,8 @@ A ready-made blueprint lives in `render.yaml`.
 1. Create a free account at <https://render.com> and sign in with GitHub.
 2. Click **New +** → **Blueprint**.
 3. Pick the `To--do-` repository and click **Connect**.
-4. Render reads `render.yaml` and shows a service called `taskflow-api`. It will
-   attach a **1 GB persistent disk** mounted at `/var/data`.
+4. Render reads `render.yaml` and shows a service called `taskflow-api`. No
+   disk is needed: the database lives on Supabase (see [section 4](#4-database-supabase-postgresql)).
 5. Fill in the prompted secret values when asked (see the table below).
 6. Click **Apply** / **Create Resources** and wait for the first deploy.
 
@@ -42,10 +46,8 @@ If you prefer to click through the dashboard instead of the blueprint:
    - **Build Command:** `npm ci`
    - **Start Command:** `npm start`
    - **Health Check Path:** `/api/health`
-3. Choose a plan that supports **Disks** (Starter or higher), then add a disk:
-   - **Name:** `taskflow-data`
-   - **Mount Path:** `/var/data`
-   - **Size:** 1 GB
+3. The **free plan** is fine — no disk is needed because the database lives on
+   Supabase.
 4. Add the environment variables from the table below.
 
 ### Backend environment variables
@@ -58,7 +60,7 @@ should be entered only here (never in Git).
 | `NODE_ENV` | `production` | Enables secure HTTPS cookies. |
 | `NODE_VERSION` | `22` | Any current LTS works. |
 | `PORT` | *(leave unset)* | Render sets `PORT` automatically; the app already reads it. |
-| `DB_PATH` | `/var/data/todo.db` | Must point inside the mounted disk. |
+| `DATABASE_URL` | *(secret)* | Supabase connection string (session-mode pooler). See §4. |
 | `CLIENT_URL` | `https://your-app.vercel.app` | The exact frontend origin allowed by CORS. No trailing slash. |
 | `JWT_SECRET` | *(secret)* | 64-char random hex. Blueprint generates it for you; otherwise run `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. |
 | `EMAIL_USER` | `you@gmail.com` | Gmail address that sends reminders. |
@@ -122,18 +124,30 @@ on the backend for a slightly stricter cookie.
 
 ---
 
-## 4. Database persistence
+## 4. Database (Supabase PostgreSQL)
 
-- The app uses SQLite via `better-sqlite3`.
-- With `DB_PATH=/var/data/todo.db` and the persistent disk mounted at
-  `/var/data`, user accounts and tasks survive restarts and redeploys.
-- Existing data is never deleted automatically. The table schema is created with
-  `CREATE TABLE IF NOT EXISTS`, and older databases are upgraded in place.
-- Tasks are always filtered by `userId` on the server, so one account can never
-  read or change another account's tasks, even by guessing an id.
+The backend now uses PostgreSQL (`pg` package) connected with `DATABASE_URL`,
+hosted for free by Supabase.
 
-No code change or schema migration is required. Only move to a managed
-PostgreSQL database if you later outgrow a single SQLite file.
+1. In the Supabase dashboard, open **Project Settings → Database →
+   Connection string → Connection pooling** and copy the **Session mode** URI
+   (`postgresql://postgres.<ref>:<password>@...pooler.supabase.com:5432/postgres`).
+   Keep it in Render's `DATABASE_URL` and in a local `server/.env` — never in Git.
+2. Create the tables once: open the **SQL Editor** in Supabase, paste the
+   contents of `server/db/schema.sql`, and click **Run**. The Table Editor then
+   shows `users` and `tasks`. (The backend also creates the tables automatically
+   on first start, but running the SQL yourself is clearer.)
+3. The database survives restarts and redeploys. Existing data is never deleted
+   automatically.
+4. Task ownership is enforced on the server — every query filters on `user_id` —
+   and passwords stay hashed (bcrypt), so the API is the only door into the data.
+5. **Optional — copy existing SQLite data** (accounts + tasks) into Supabase:
+   ```
+   cd server
+   node scripts/copy-sqlite-to-postgres.mjs
+   ```
+   The script only **reads** `server/data/todo.db`; it never modifies it. Run it
+   after the schema exists and `DATABASE_URL` is set.
 
 ---
 

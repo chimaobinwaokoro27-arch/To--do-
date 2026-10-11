@@ -1,6 +1,6 @@
 # To-Do Reminder Backend
 
-A small Node.js + Express + SQLite backend for a To-Do app. It stores your tasks,
+A small Node.js + Express + PostgreSQL backend for a To-Do app. It stores your tasks,
 works out **when** each reminder should go out, and **sends the email by itself**
 when that time arrives. Every account only ever sees its own tasks.
 
@@ -11,8 +11,8 @@ when that time arrives. Every account only ever sees its own tasks.
 - Keeps **user accounts**: email + a bcrypt-hashed password, stored in `users`.
 - Logs a user in with a **JWT in an HTTP-only cookie**. The token is never given
   to page scripts and is never written to `localStorage`.
-- Stores tasks (title, description, deadline, reminder lead time) in a local
-  SQLite file at `data/todo.db`.
+- Stores tasks (title, description, deadline, reminder lead time) in a
+  PostgreSQL database (Supabase) reached through `DATABASE_URL`.
 - Gives every task an owner (`userId`) and **only ever returns the tasks that
   belong to the logged-in user**.
 - Calculates the reminder time automatically:
@@ -56,10 +56,11 @@ cd server
 npm install
 ```
 
-`better-sqlite3` is a native module, but it ships prebuilt binaries, so no compiler
-is needed on Windows/macOS/Linux.
+The app talks to PostgreSQL through `pg`, which is pure JavaScript, so no native
+compiler is needed. `better-sqlite3` is still installed only for the optional
+`scripts/copy-sqlite-to-postgres.mjs` that reads the old local database.
 
-Packages used: `express`, `cors`, `cookie-parser`, `better-sqlite3`, `nodemailer`,
+Packages used: `express`, `cors`, `cookie-parser`, `pg`, `nodemailer`,
 `node-cron`, `bcryptjs`, `jsonwebtoken`, `dotenv`.
 
 ## 4. Create your `.env` file
@@ -154,8 +155,8 @@ tasks
 ```
 
 `tasks.userId` has an index (`idx_tasks_user_id`) so the "my tasks" query stays
-fast, and SQLite foreign keys are switched on, so a task can never point at a
-user that does not exist.
+fast, and PostgreSQL foreign keys are enforced by default, so a task can never
+point at a user that does not exist.
 
 **Older databases are never thrown away.** On startup the server checks whether
 `tasks.userId` exists and adds the column with `ALTER TABLE` if it does not. Tasks
@@ -341,7 +342,7 @@ Errors always come back as JSON: `{ "error": "message here" }`.
 
 1. `src/server.js` starts one `node-cron` job with the schedule `* * * * *`
    (top of every minute) and also runs one check immediately at startup.
-2. Each run asks SQLite for tasks where
+2. Each run asks PostgreSQL for tasks where
    `emailSent = 0 AND completed = 0 AND reminderAt <= now`, joining `users` to
    find the owner's address.
 3. For each task it calls `sendReminderEmail(task)` (`src/services/emailService.js`),
@@ -481,7 +482,7 @@ server/
 ├── src/
 │   ├── config/
 │   │   ├── auth.js             # JWT signing, cookie options, safe user object
-│   │   └── db.js               # opens SQLite, creates tables, adds userId
+│   │   └── db.js               # PostgreSQL pool, creates tables, camelCases rows
 │   ├── middleware/auth.js      # requireAuth: reads + verifies the cookie
 │   ├── services/
 │   │   ├── emailService.js     # Gmail + Nodemailer, sendReminderEmail(task)
