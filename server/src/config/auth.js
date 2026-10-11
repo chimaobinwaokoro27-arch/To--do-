@@ -5,6 +5,16 @@ export const AUTH_COOKIE = 'todo_token';
 const TOKEN_LIFETIME = '7d';
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+// The frontend and API are often on different domains in production (for
+// example a Vercel frontend and a Render API). Browsers only send the login
+// cookie on those cross-site requests when it is SameSite=None; Secure, so
+// that is the production default. Set COOKIE_SAMESITE=lax when the frontend
+// and the API share one domain.
+const SAME_SITE =
+  (process.env.COOKIE_SAMESITE || '').trim().toLowerCase() || (isProduction ? 'none' : 'lax');
+
 // The secret must never be written in the code. If JWT_SECRET is missing we
 // make up a random one for this run only, so nobody can log in with a guessed
 // token. People just have to log in again after a restart.
@@ -39,11 +49,19 @@ export function verifyToken(token) {
 export function cookieOptions() {
   return {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
+    sameSite: SAME_SITE,
+    // SameSite=None cookies are only accepted over HTTPS, so secure is forced
+    // on whenever that is the setting.
+    secure: isProduction || SAME_SITE === 'none',
     maxAge: MAX_AGE_MS,
     path: '/',
   };
+}
+
+/** The same cookie attributes without maxAge, for clearing the cookie. */
+export function clearCookieOptions() {
+  const { maxAge, ...rest } = cookieOptions();
+  return rest;
 }
 
 /** The only user fields that are ever sent to the browser. */

@@ -1,4 +1,4 @@
-import { AUTH_COOKIE, verifyToken } from '../config/auth.js';
+import { AUTH_COOKIE, verifyToken, clearCookieOptions } from '../config/auth.js';
 
 /**
  * Stops the request unless a valid JWT cookie is present.
@@ -22,7 +22,7 @@ export function requireAuth(req, res, next) {
     return next();
   } catch {
     // Expired or tampered token: the cookie is useless, so drop it.
-    res.clearCookie(AUTH_COOKIE, { path: '/' });
+    res.clearCookie(AUTH_COOKIE, clearCookieOptions());
     return res.status(401).json({ error: 'Your session has expired. Please log in again.' });
   }
 }

@@ -3,7 +3,13 @@ import bcrypt from 'bcryptjs';
 import { db } from '../config/db.js';
 import { nowLocalIsoString } from '../utils/dateTime.js';
 import { requireAuth } from '../middleware/auth.js';
-import { AUTH_COOKIE, cookieOptions, createToken, toSafeUser } from '../config/auth.js';
+import {
+  AUTH_COOKIE,
+  cookieOptions,
+  clearCookieOptions,
+  createToken,
+  toSafeUser,
+} from '../config/auth.js';
 
 const router = express.Router();
 
@@ -102,7 +108,7 @@ router.post('/login', (req, res, next) => {
 
 // POST /api/auth/logout
 router.post('/logout', (req, res) => {
-  res.clearCookie(AUTH_COOKIE, { path: '/' });
+  res.clearCookie(AUTH_COOKIE, clearCookieOptions());
   res.json({ message: 'Logged out' });
 });
 
