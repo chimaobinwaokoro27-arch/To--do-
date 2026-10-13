@@ -33,3 +33,5 @@ dist-ssr
 
 # Local SQLite database and its journal files
 server/data/
+
+.vercel
